@@ -23,6 +23,12 @@ resource "aws_instance" "blog" {
   instance_type          = var.instance_type
   vpc_security_group_ids = [aws_security_group.blog.id]
 
+  user_data = <<-EOF
+              #!/bin/bash
+              dnf install -y httpd
+              systemctl enable --now httpd
+              echo "<h1>Hello from Terraform</h1>" > /var/www/html/index.html
+              EOF
   tags = {
     Name = "Learning Terraform"
   }
