@@ -3,7 +3,7 @@ data "aws_ami" "app_ami" {
 
   filter {
     name   = "name"
-    values = ["al2023-ami-*-x86_64"]
+    values = ["al2023-ami-2023.*-x86_64"]
   }
 
   filter {
@@ -15,20 +15,20 @@ data "aws_ami" "app_ami" {
 }
 
 module "blog_vpc" {
-  source = "terraform-aws-modules/vpc/aws"
+  source  = "terraform-aws-modules/vpc/aws"
   version = "~> 6.0"
+
   name = "dev"
   cidr = "10.0.0.0/16"
 
-  azs             = ["us-west-2a","us-west-2b","us-west-2c"]
-  public_subnets  = ["10.0.101.0/24", "10.0.102.0/24", "10.0.103.0/24"]
+  azs            = ["us-west-2a", "us-west-2b", "us-west-2c"]
+  public_subnets = ["10.0.101.0/24", "10.0.102.0/24", "10.0.103.0/24"]
 
   tags = {
-    Terraform = "true"
+    Terraform   = "true"
     Environment = "dev"
   }
 }
-
 
 module "blog_autoscaling" {
   source  = "terraform-aws-modules/autoscaling/aws"
@@ -39,10 +39,16 @@ module "blog_autoscaling" {
   min_size            = 1
   max_size            = 2
   vpc_zone_identifier = module.blog_vpc.public_subnets
-  target_group_arns   = module.blog_alb.target_group_arns
   security_groups     = [module.blog_sg.security_group_id]
   instance_type       = var.instance_type
   image_id            = data.aws_ami.app_ami.id
+
+  traffic_source_attachments = {
+    blog_alb = {
+      traffic_source_identifier = module.blog_alb.target_groups["blog"].arn
+      traffic_source_type       = "elbv2"
+    }
+  }
 }
 
 module "blog_alb" {
@@ -53,26 +59,33 @@ module "blog_alb" {
 
   load_balancer_type = "application"
 
-  vpc_id             = module.blog_vpc.vpc_id
-  subnets            = module.blog_vpc.public_subnets
-  security_groups    = [module.blog_sg.security_group_id]
+  vpc_id          = module.blog_vpc.vpc_id
+  subnets         = module.blog_vpc.public_subnets
+  security_groups = [module.blog_sg.security_group_id]
 
-  target_groups = [
-    {
-      name_prefix      = "blog-"
-      backend_protocol = "HTTP"
-      backend_port     = 80
-      target_type      = "instance"
-    }
-  ]
+  # v9 defaults this to true, which blocks `terraform destroy` on a dev stack
+  enable_deletion_protection = false
 
-  http_tcp_listeners = [
-    {
-      port               = 80
-      protocol           = "HTTP"
-      target_group_index = 0
+  listeners = {
+    http = {
+      port     = 80
+      protocol = "HTTP"
+
+      forward = {
+        target_group_key = "blog"
+      }
     }
-  ]
+  }
+
+  target_groups = {
+    blog = {
+      name_prefix       = "blog-"
+      protocol          = "HTTP"
+      port              = 80
+      target_type       = "instance"
+      create_attachment = false # the ASG registers instances, not the ALB module
+    }
+  }
 
   tags = {
     Environment = "dev"
@@ -81,12 +94,13 @@ module "blog_alb" {
 
 module "blog_sg" {
   source  = "terraform-aws-modules/security-group/aws"
-  version = "4.13.0"
+  version = "~> 5.0"
 
-  vpc_id  = module.blog_vpc.vpc_id
-  name    = "blog"
-  ingress_rules = ["https-443-tcp","http-80-tcp"]
+  name   = "blog"
+  vpc_id = module.blog_vpc.vpc_id
+
+  ingress_rules       = ["https-443-tcp", "http-80-tcp"]
   ingress_cidr_blocks = ["0.0.0.0/0"]
-  egress_rules = ["all-all"]
-  egress_cidr_blocks = ["0.0.0.0/0"]
+  egress_rules        = ["all-all"]
+  egress_cidr_blocks  = ["0.0.0.0/0"]
 }
